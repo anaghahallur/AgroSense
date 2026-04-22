@@ -4,3 +4,4 @@ joblib
 matplotlib
 seaborn
 scikit-learn
+pyserial

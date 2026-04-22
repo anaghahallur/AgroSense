@@ -5,6 +5,12 @@ import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import serial
+import serial.tools.list_ports
+import threading
+import json
+import time
+import math
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -135,12 +141,53 @@ def load_data():
 yield_model, yield_features = load_models()
 yield_df_raw, rainfall_df, temp_df = load_data()
 
+# --- HARDWARE INTEGRATION ---
+if "live_moisture" not in st.session_state:
+    st.session_state.live_moisture = 0
+if "live_temp" not in st.session_state:
+    st.session_state.live_temp = 25.0
+if "last_data_time" not in st.session_state:
+    st.session_state.last_data_time = 0
+if "serial_connected" not in st.session_state:
+    st.session_state.serial_connected = False
+if "port" not in st.session_state:
+    st.session_state.port = None
+
+def serial_reader():
+    while st.session_state.serial_connected:
+        try:
+            if st.session_state.port and st.session_state.port.is_open:
+                line = st.session_state.port.readline().decode('utf-8', errors='ignore').strip()
+                if line and line.startswith('{'):
+                    data = json.loads(line)
+                    st.session_state.live_moisture = data.get("moisture", st.session_state.live_moisture)
+                    st.session_state.live_temp = data.get("temp", st.session_state.live_temp)
+                    st.session_state.last_data_time = time.time()
+        except Exception:
+            st.session_state.serial_connected = False
+            break
+        time.sleep(0.1)
+
+def connect_hardware(port_name):
+    try:
+        st.session_state.port = serial.Serial(port_name, 115200, timeout=1)
+        st.session_state.serial_connected = True
+        thread = threading.Thread(target=serial_reader, daemon=True)
+        thread.start()
+        return True
+    except:
+        return False
+
 # --- LOGIC ---
 def predict_yield_val(sensor):
     if not yield_model or yield_features is None:
         return random.randint(35000, 55000)
+    
+    # Map moisture to rainfall if provided
+    rainfall = 600 + (sensor.get("Moisture", 50) * 14) if sensor.get("Moisture") is not None else random.randint(800, 1500)
+    
     data = {
-        "average_rain_fall_mm_per_year": random.randint(800, 1500),
+        "average_rain_fall_mm_per_year": rainfall,
         "avg_temp": sensor["Temperature"],
         "pesticides_tonnes": random.randint(100, 500),
         "Item": sensor["Crop Type"],
@@ -191,15 +238,62 @@ def show_predictor():
         k = st.slider("Potassium (K)", 0, 140, 40)
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # Hardware Connection Section
+    with st.expander("🔌 Hardware Integration", expanded=True):
+        cols = st.columns([2, 1])
+        with cols[0]:
+            available_ports = [p.device for p in serial.tools.list_ports.comports()]
+            selected_port = st.selectbox("Select ESP32 Port", available_ports if available_ports else ["No ports found"])
+        with cols[1]:
+            if not st.session_state.serial_connected:
+                if st.button("CONNECT"):
+                    if connect_hardware(selected_port):
+                        st.success(f"Connected to {selected_port}")
+                        st.rerun()
+                    else:
+                        st.error("Failed to connect.")
+            else:
+                if st.button("DISCONNECT"):
+                    st.session_state.serial_connected = False
+                    if st.session_state.port: st.session_state.port.close()
+                    st.rerun()
+
+    if st.session_state.serial_connected:
+        if st.session_state.last_data_time < time.time() - 2:
+            st.warning("⚠️ Waiting for data... (Check ESP32 Port & Wiring)")
+        else:
+            st.success("✅ Real-time Stream Active")
+            
+        mc1, mc2 = st.columns(2)
+        mc1.metric("Live Soil Moisture", f"{st.session_state.live_moisture}%")
+        mc2.metric("Live Temperature", f"{st.session_state.live_temp:.1f}°C")
+        live_mode = st.toggle("Use Live Sensor Data for Prediction", value=True)
+    else:
+        live_mode = False
+
     if st.button("RUN AI PREDICTION"):
         with st.spinner("Analyzing..."):
-            sensor = {"Temperature": temp, "Nitrogen": n, "Phosphorous": p, "Potassium": k, "Crop Type": crop}
+            # Prepare sensor data
+            s_temp = st.session_state.live_temp if live_mode else temp
+            s_moist = st.session_state.live_moisture if live_mode else None
+            
+            sensor = {
+                "Temperature": s_temp, 
+                "Nitrogen": n, 
+                "Phosphorous": p, 
+                "Potassium": k, 
+                "Crop Type": crop,
+                "Moisture": s_moist
+            }
+            
             yld = predict_yield_val(sensor)
             fert, desc = recommend_fertilizer(sensor)
             
             sc1, sc2 = st.columns(2)
             with sc1:
                 st.markdown(f'<div class="prediction-card"><p class="metric-label">Predicted Yield</p><p class="metric-value">{yld/10000:.2f} t/ha</p></div>', unsafe_allow_html=True)
+                if live_mode:
+                    st.caption(f"Hardware Mode: Using {s_temp:.1f}°C and {st.session_state.live_moisture}% moisture.")
             with sc2:
                 st.markdown(f'<div class="prediction-card"><p class="metric-label">Target Fertilizer</p><p class="metric-value" style="font-size:2rem">{fert}</p><p>{desc}</p></div>', unsafe_allow_html=True)
 
