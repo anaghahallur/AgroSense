@@ -219,9 +219,12 @@ def show_home():
             st.session_state.current_page = "Predictor"
             st.rerun()
     with c2:
-        banner = "/Users/Anagha/.gemini/antigravity/brain/01993ab8-2405-4537-b3e5-9d74950c5980/agrosense_hero_banner_1776786331382.png"
-        if os.path.exists(banner): st.image(banner)
-        else: st.image("https://via.placeholder.com/400x300?text=AgroSense+Dashboard")
+        banner_path = "agrosense_banner.png"
+        if os.path.exists(banner_path): 
+            st.image(banner_path)
+        else:
+            # Subtle fallback if the file is missing, no external network calls
+            st.markdown('<div style="height:300px; background:#1e293b; border-radius:16px; border:1px solid #334155;"></div>', unsafe_allow_html=True)
 
 def show_predictor():
     st.header("Precision Yield Simulator")
